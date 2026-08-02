@@ -199,24 +199,39 @@ def clean(text: str) -> str:
 
 
 def item_uuid(handle: str) -> str | None:
-    q = urllib.parse.quote(f'handle:"{handle}"')
-    d = json.loads(get(f"{API}/discover/search/objects?query={q}&size=1"))
-    objs = (d.get("_embedded", {}).get("searchResult", {})
-             .get("_embedded", {}).get("objects", []))
-    if not objs:
-        return None
-    return objs[0].get("_embedded", {}).get("indexableObject", {}).get("uuid")
+    """Resolve handle -> item UUID.
+
+    `/pid/find` answers directly instead of going through the search index, which
+    is both cheaper for the server and less fragile than a Solr query.
+    """
+    d = json.loads(get(f"{API}/pid/find?id=hdl:{handle}"))
+    return d.get("uuid")
 
 
 def text_for_item(uuid: str) -> str | None:
-    d = json.loads(get(f"{API}/core/items/{uuid}/bundles"))
-    tb = next((b for b in d.get("_embedded", {}).get("bundles", [])
-               if b.get("name") == "TEXT"), None)
+    """Fetch the pre-extracted text, using `embed` to collapse two calls into one.
+
+    Politeness caps the request RATE, so the way to finish sooner is to need fewer
+    requests per document -- not to raise the rate. `?embed=bundles/bitstreams`
+    returns the bundle list with its bitstreams inlined, taking a document from
+    four requests (search -> bundles -> bitstreams -> content) down to three
+    (pid -> item+embed -> content). Documents with no TEXT bundle -- about 75% at
+    ITU -- now cost two requests instead of three.
+    """
+    d = json.loads(get(f"{API}/core/items/{uuid}?embed=bundles/bitstreams"))
+    bundles = d.get("_embedded", {}).get("bundles", {})
+    blist = bundles.get("_embedded", {}).get("bundles", []) if isinstance(bundles, dict) else []
+    tb = next((b for b in blist if b.get("name") == "TEXT"), None)
     if not tb:
         return None
-    d2 = json.loads(get(f"{API}/core/bundles/{tb['uuid']}/bitstreams"))
+    bs_holder = tb.get("_embedded", {}).get("bitstreams", {})
+    bitstreams = (bs_holder.get("_embedded", {}).get("bitstreams", [])
+                  if isinstance(bs_holder, dict) else [])
+    if not bitstreams:                      # older DSpace: fall back to the extra call
+        d2 = json.loads(get(f"{API}/core/bundles/{tb['uuid']}/bitstreams"))
+        bitstreams = d2.get("_embedded", {}).get("bitstreams", [])
     parts = []
-    for bs in d2.get("_embedded", {}).get("bitstreams", []):
+    for bs in bitstreams:
         href = bs.get("_links", {}).get("content", {}).get("href")
         if href:
             parts.append(get(href).decode("utf-8", errors="replace"))
