@@ -33,7 +33,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-import harvest_polen as H  # noqa: E402  - reuse get(), the limiter and the breaker
+import harvest as H  # noqa: E402  - reuse get(), the limiter and the breaker
 
 CANDIDATES = [
     # DNS-verified 2026-08-02. Guessed hostnames mostly do not resolve, so this list
@@ -89,7 +89,11 @@ def probe(base: str, sample: int, seed: int) -> dict:
     #    damn a repository by accident.
     handles: list[str] = []
     rng = random.Random(seed)
-    token = tok.get("resumptionToken") if tok is not None else None
+    # The token is the element's TEXT, not an attribute (OAI-PMH spec); only
+    # completeListSize/cursor are attributes. Reading it as an attribute yielded
+    # None, so `hops` was always 0 and every repository was judged on page 1 --
+    # exactly the deposit-order bias the random hop above exists to avoid.
+    token = tok.text.strip() if tok is not None and tok.text else None
     hops = rng.randint(0, 6) if token else 0
     for _ in range(hops):
         if not token:
@@ -98,7 +102,7 @@ def probe(base: str, sample: int, seed: int) -> dict:
             f"{oai}?verb=ListIdentifiers&resumptionToken={urllib.parse.quote(token)}",
             tries=2, delay=2.0))
         t = page.find(".//oai:resumptionToken", ns)
-        token = t.get("resumptionToken") if t is not None else None
+        token = t.text.strip() if t is not None and t.text else None
     for h in page.findall(".//oai:header/oai:identifier", ns):
         if h.text and "/" in h.text:
             handles.append(h.text.strip().split(":")[-1])
