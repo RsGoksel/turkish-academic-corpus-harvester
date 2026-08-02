@@ -210,6 +210,108 @@ def harvest_meta(delay: float) -> None:
     print(f"done: {len(seen)} records -> {out_path}")
 
 
+
+# ------------------------------------------------------- stage 1.5: TEXT bundle scan
+
+def scan_bundles(delay: float, page_size: int, shard: int = 0,
+                 num_shards: int = 1) -> None:
+    """Find which items carry a TEXT bundle -- in bulk, before fetching anything.
+
+    The text stage costs three requests per document (pid/find -> item+embed ->
+    content) and two per document that turns out to have no TEXT at all. At Marmara
+    and Ege only about one record in ten has one, so nine tenths of the request
+    budget buys nothing. Politeness caps the RATE, so the only way to finish sooner
+    is to need fewer requests.
+
+    `/discover/search/objects` is the PUBLIC counterpart of `/core/items` (which
+    answers 401 to anonymous callers) and it honours `embed=bundles/bitstreams`.
+    One request therefore reports, for `page_size` items at once: the handle, the
+    item UUID, whether a TEXT bundle exists, and -- crucially -- the direct content
+    URL and byte size of its bitstream.
+
+    That collapses the whole pipeline to:
+        scan:  records / page_size requests
+        fetch: one request per document that actually has text
+
+    Measured against Selcuk (2026-08-02): deep pagination works to the final page
+    (page 548 of 54,829 items). Page size matters more than it looks -- size=100
+    took 28.3 s (283 ms/record) but size=25 took 2.5 s (101 ms/record), so smaller
+    pages are nearly 3x cheaper per record. Default 25.
+
+    Writes scan[.shardN].jsonl; the text stage picks it up automatically.
+    """
+    global LIMITER, BREAKER
+    LIMITER = RateLimiter(delay)
+    BREAKER = CircuitBreaker()
+
+    suffix = "" if num_shards == 1 else f".shard{shard}"
+    out_path = OUT / f"scan{suffix}.jsonl"
+    OUT.mkdir(parents=True, exist_ok=True)
+
+    # Resume by page: a partial scan is still useful, so never start over.
+    done_pages = set()
+    if out_path.exists():
+        for line in out_path.open():
+            try:
+                done_pages.add(json.loads(line)["page"])
+            except Exception:
+                continue
+
+    first = json.loads(get(f"{API}/discover/search/objects?dsoType=item&size=1&page=0"))
+    total = (((first.get("_embedded") or {}).get("searchResult") or {})
+             .get("page") or {}).get("totalElements")
+    if not total:
+        raise SystemExit("discover endpoint reported no items -- is this DSpace 7?")
+    n_pages = (total + page_size - 1) // page_size
+    mine = [p for p in range(n_pages) if p % num_shards == shard and p not in done_pages]
+    print(f"{total:,} kayit / sayfa {page_size} -> {n_pages:,} sayfa | "
+          f"shard {shard}/{num_shards}: {len(mine):,} sayfa ({len(done_pages):,} zaten var)")
+
+    with_text = no_text = 0
+    with out_path.open("a") as f:
+        for i, page in enumerate(mine, 1):
+            url = (f"{API}/discover/search/objects?dsoType=item"
+                   f"&size={page_size}&page={page}&embed=bundles/bitstreams")
+            try:
+                d = json.loads(get(url))
+            except RestrictedError:
+                continue
+            except Exception as e:                      # noqa: BLE001
+                print(f"  sayfa {page}: {type(e).__name__} {str(e)[:70]}")
+                continue
+            objs = ((((d.get("_embedded") or {}).get("searchResult") or {})
+                     .get("_embedded") or {}).get("objects") or [])
+            for o in objs:
+                ind = (o.get("_embedded") or {}).get("indexableObject") or {}
+                handle = ind.get("handle")
+                if not handle:
+                    continue
+                blist = ((((ind.get("_embedded") or {}).get("bundles") or {})
+                          .get("_embedded") or {}).get("bundles") or [])
+                tb = next((b for b in blist if b.get("name") == "TEXT"), None)
+                rec = {"page": page, "handle": handle, "uuid": ind.get("uuid")}
+                urls, size_bytes = [], 0
+                if tb:
+                    bs_list = ((((tb.get("_embedded") or {}).get("bitstreams") or {})
+                                .get("_embedded") or {}).get("bitstreams") or [])
+                    for bs in bs_list:
+                        href = ((bs.get("_links") or {}).get("content") or {}).get("href")
+                        if href:
+                            urls.append(href)
+                            size_bytes += bs.get("sizeBytes") or 0
+                rec["text_urls"] = urls
+                rec["bytes"] = size_bytes
+                with_text += bool(urls)
+                no_text += not urls
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            if i % 20 == 0 or i == len(mine):
+                f.flush()
+                pct = 100 * with_text / max(1, with_text + no_text)
+                print(f"  {i}/{len(mine)} sayfa  TEXT var={with_text:,} yok={no_text:,} "
+                      f"(%{pct:.1f})", flush=True)
+    print(f"bitti: {with_text:,} belgede TEXT var, {no_text:,} yok -> {out_path}")
+
+
 # --------------------------------------------------------------- stage 2: full text
 
 _WS = re.compile(r"[ \t]{2,}")
@@ -307,12 +409,43 @@ def harvest_text(workers: int, delay: float, min_chars: int,
 
     import hashlib
 
+    # If a scan exists, it already tells us -- per handle -- whether a TEXT bundle
+    # is there and where its content lives. That turns a document from three
+    # requests into one, and a document WITHOUT text from two requests into zero.
+    # Where hit rates are low (about one in ten at Marmara and Ege) this is the
+    # difference between a two-day shard and a two-hour one.
+    scan: dict[str, dict] = {}
+    for sp in sorted(OUT.glob("scan*.jsonl")):
+        for line in sp.open():
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            h = rec.get("handle")
+            if h:
+                scan[h] = rec          # later files win; re-scans are corrections
+    if scan:
+        have = sum(1 for v in scan.values() if v.get("text_urls"))
+        print(f"  tarama bulundu: {len(scan):,} kayit, {have:,} tanesinde TEXT var "
+              f"-> metni olmayanlar hic istenmeyecek")
+
     rows = []
     for line in meta_path.open():
         r = json.loads(line)
         h = r.get("handle")
         if not h or h in done:
             continue
+        hit = scan.get(h)
+        if hit is not None:
+            if not hit.get("text_urls"):
+                # Known-empty from the scan: record it as the permanent result it is
+                # rather than spending two requests rediscovering it.
+                done.add(h)
+                with fail_path.open("a") as f:
+                    f.write(json.dumps({"handle": h, "error": "no_text_bundle",
+                                        "via": "scan"}, ensure_ascii=False) + "\n")
+                continue
+            r = {**r, "_scan": hit}
         # Shard on a hash of the handle, NOT the line index. Index-based splitting
         # silently breaks when two machines harvest meta separately: the files end
         # up in different orders, so shards overlap and other records are never
@@ -328,10 +461,18 @@ def harvest_text(workers: int, delay: float, min_chars: int,
     def work(r):
         h = r["handle"]
         try:
-            u = item_uuid(h)
-            if not u:
-                return h, None, "no_uuid", r
-            t = text_for_item(u)
+            hit = r.get("_scan")
+            if hit and hit.get("text_urls"):
+                # The scan already resolved handle -> content URL, so go straight to
+                # the bytes: one request instead of three.
+                parts = [get(u).decode("utf-8", errors="replace")
+                         for u in hit["text_urls"]]
+                t = "\n\n".join(p for p in parts if p)
+            else:
+                u = item_uuid(h)
+                if not u:
+                    return h, None, "no_uuid", r
+                t = text_for_item(u)
             if not t:
                 return h, None, "no_text_bundle", r
             t = clean(t)
@@ -403,11 +544,13 @@ def harvest_text(workers: int, delay: float, min_chars: int,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["meta", "text"])
+    ap.add_argument("stage", choices=["meta", "scan", "text"])
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--delay", type=float, default=1.5,
                     help="minimum seconds BETWEEN requests, enforced globally")
     ap.add_argument("--min-chars", type=int, default=2000)
+    ap.add_argument("--page-size", type=int, default=25,
+                    help="scan stage: items per request (25 measured cheapest)")
     ap.add_argument("--repo", default="itu",
                     help=f"short name ({', '.join(REPOS)}) or a base URL")
     ap.add_argument("--shard", type=int, default=0,
@@ -426,9 +569,14 @@ def main():
         base, REPO = REPOS[a.repo], a.repo
     OAI = f"{base}/server/oai/request"
     API = f"{base}/server/api"
-    OUT = Path(f"data/repos/{a.repo}")
+    # REPO, a.repo değil: URL biçiminde verildiğinde a.repo "https://..." olur ve
+    # çıktı data/repos/https:/host/ altına düşer -- text aşaması künyeyi orada
+    # bulamaz. REPO her iki biçimde de kısa addır. (PC-1 ve PC-4 bildirdi.)
+    OUT = Path(f"data/repos/{REPO}")
     if a.stage == "meta":
         harvest_meta(a.delay)
+    elif a.stage == "scan":
+        scan_bundles(a.delay, a.page_size, a.shard, a.num_shards)
     else:
         harvest_text(a.workers, a.delay, a.min_chars, a.shard, a.num_shards)
 

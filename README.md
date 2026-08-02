@@ -1,5 +1,37 @@
 # Türk Üniversiteleri Açık Arşiv Hasatçısı
 
+## ⚡ ÖNEMLİ — iki yeni şey (2026-08-02)
+
+**1. `scan` aşaması: hasadı 15 kata kadar hızlandırır.**
+
+Eski yol belge başına 3 istek, TEXT'i olmayan kayıt başına 2 istek harcıyordu.
+Marmara ve Ege'de kayıtların yalnızca ~%10'unda TEXT var — yani istek bütçesinin
+onda dokuzu boşa gidiyordu. `scan` tek istekte 25 kaydın hangisinde TEXT olduğunu
+**ve indirme adresini** öğrenir. Sonrasında metin aşaması belge başına 1 istek
+harcar, TEXT'i olmayana hiç dokunmaz.
+
+Ölçüldü (Selçuk, canlı sunucu): 5 kayıtlık testte eski yol 13 istek, yeni yol 3.
+Marmara shard'ı için 36.240 istek → 2.417. **~30 saat → ~2 saat.**
+
+```bash
+# ÖNCE tarama (kendi shard'ınız), SONRA metin
+python3 harvest.py scan --repo selcuk --shard 1 --num-shards 5 --delay 2
+python3 harvest.py text --repo selcuk --shard 1 --num-shards 5 --workers 1 --delay 3
+```
+
+`scan` sayfa numarasına göre bölünür, `text` handle hash'ine göre — ikisi farklı
+bölmelerdir, bu normaldir. Tarama çıktısını **herkesle paylaşın** (bkz. DELIVERY.md):
+bir kez öğrenilen "kimde TEXT var" bilgisi tüm filoya yarar.
+
+**2. Çıktıları bitince değil, her 2 saatte bir gönderin** → [DELIVERY.md](DELIVERY.md)
+
+Ayrıca: hangi depodan ne aldığımızın tek kaydı → [SOURCES.md](SOURCES.md)
+
+**Düzeltildi:** `--repo https://...` biçimi artık doğru dizine yazıyor
+(önceden `data/repos/https:/host/` altına düşüp "run meta stage first" hatası
+veriyordu — PC-1 ve PC-4 bildirdi).
+
+
 Türkiye'deki üniversitelerin **açık erişim** kurumsal arşivlerinden (DSpace) natif Türkçe akademik metin toplar. Toplanan korpus, Türkçe bir LLM'in **continued pre-training (CPT)** aşamasında kullanılır.
 
 **Neden bu veri:** Türkçe LLM'lerin en büyük sorunu makine çevirisi verisiyle eğitilmeleri — model "çeviri kokan" Türkçe üretiyor. Tezler ve akademik yayınlar ise **insan eliyle yazılmış, natif, yüksek register** Türkçe. Bu korpus onu sağlıyor.
