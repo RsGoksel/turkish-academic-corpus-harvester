@@ -246,22 +246,38 @@ def harvest_text(workers: int, delay: float, min_chars: int,
                 done.add(json.loads(line)["handle"])
             except Exception:
                 pass
+    # Only PERMANENT failures count as done. A transient HTTP error or timeout must
+    # be retried on the next run; treating those as final silently drops documents
+    # that were merely unlucky.
+    PERMANENT = {"no_text_bundle", "no_uuid"}
     if fail_path.exists():
         for line in fail_path.open():
             try:
-                done.add(json.loads(line)["handle"])
+                rec = json.loads(line)
+                err = str(rec.get("error", ""))
+                if err in PERMANENT or err.startswith("too_short"):
+                    done.add(rec["handle"])
             except Exception:
                 pass
 
+    import hashlib
+
     rows = []
-    for i, line in enumerate(meta_path.open()):
-        # Deterministic split by line index: every machine reads the same meta file
-        # and takes a disjoint slice, so no coordination and no duplicated requests.
-        if i % num_shards != shard:
-            continue
+    for line in meta_path.open():
         r = json.loads(line)
-        if r.get("handle") and r["handle"] not in done:
-            rows.append(r)
+        h = r.get("handle")
+        if not h or h in done:
+            continue
+        # Shard on a hash of the handle, NOT the line index. Index-based splitting
+        # silently breaks when two machines harvest meta separately: the files end
+        # up in different orders, so shards overlap and other records are never
+        # fetched at all. Hashing the handle is order-independent, so every machine
+        # computes the same assignment from any copy of the metadata.
+        if num_shards > 1:
+            digest = hashlib.blake2b(h.encode(), digest_size=8).digest()
+            if int.from_bytes(digest, "big") % num_shards != shard:
+                continue
+        rows.append(r)
     print(f"shard {shard}/{num_shards}: {len(done)} done, {len(rows)} remaining")
 
     def work(r):

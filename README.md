@@ -49,45 +49,46 @@ python3 -c "import urllib.request, xml.etree.ElementTree; print('hazır')"
 
 ## 🖥️ HANGİ MAKİNE NE YAPACAK
 
-**5 makine var. Kendi numaranı bul ve SADECE o bölümdeki komutları çalıştır.**
+### ⚠️ ÖNCE BUNU YAP — künyeyi İNDİR, hasat ETME
 
-### PC-0 — dual5090 (ana makine, Göksel'in)
-Bu makine İTÜ'yü zaten bitirdi (68.911 künye + 16.997 tam metin) ve koordinasyonu yapıyor.
+Künye hasadı **bir kez yapıldı ve yayınlandı** (279.635 kayıt). Kendin çekme: hem
+sunucuyu boşuna yorar, hem de shard hesabı için herkesin **aynı handle kümesini**
+görmesi gerekir.
+
 ```bash
-python3 harvest.py text --repo itu --shard 0 --num-shards 5 --workers 2 --delay 1.5
+mkdir -p data/repos/itu data/repos/ege data/repos/marmara data/repos/hacettepe
+BASE=https://github.com/RsGoksel/turkish-academic-corpus-harvester/releases/download/meta-v1
+for r in itu ege marmara hacettepe; do
+  curl -sL "$BASE/${r}_meta.jsonl.gz" | gunzip > data/repos/$r/meta.jsonl
+done
+wc -l data/repos/*/meta.jsonl
+# beklenen: itu 68911 | ege 118818 | marmara 87506 | hacettepe 4400
 ```
 
-### PC-1
-```bash
-# 1) Önce künyeleri çek (yoksa)
-python3 harvest.py meta --repo ege --delay 3
-# 2) Sonra tam metin — kendi payın
-python3 harvest.py text --repo ege --shard 1 --num-shards 5 --workers 1 --delay 3
-```
+### Sonra: kendi shard'ını çalıştır
 
-### PC-2
-```bash
-python3 harvest.py meta --repo marmara --delay 3
-python3 harvest.py text --repo marmara --shard 2 --num-shards 5 --workers 1 --delay 3
-```
+Shard ataması `handle`'ın **hash**'ine göre yapılır — dosya sırasından bağımsızdır,
+yani künyeyi nereden aldığın önemli değil, her makine aynı bölümlemeyi hesaplar.
 
-### PC-3
-```bash
-python3 harvest.py meta --repo hacettepe --delay 5   # bu sunucu hassas, delay yüksek
-python3 harvest.py text --repo hacettepe --shard 3 --num-shards 5 --workers 1 --delay 3
-```
+| makine | komut |
+|---|---|
+| **PC-0** (dual5090) | `python3 harvest.py text --repo ege --shard 0 --num-shards 5 --workers 2 --delay 1.5` |
+| **PC-1** | `python3 harvest.py text --repo ege --shard 1 --num-shards 5 --workers 1 --delay 3` |
+| **PC-2** | `python3 harvest.py text --repo ege --shard 2 --num-shards 5 --workers 1 --delay 3` |
+| **PC-3** | `python3 harvest.py text --repo marmara --shard 3 --num-shards 5 --workers 1 --delay 3` |
+| **PC-4** | `python3 harvest.py text --repo marmara --shard 4 --num-shards 5 --workers 1 --delay 3` |
 
-### PC-4 — keşif görevi
-Yeni üniversite arşivi bul (aşağıdaki listeden test et), çalışanı `harvest.py` içindeki `REPOS` sözlüğüne ekle, sonra hasat et:
-```bash
-# Test:
-curl -s "https://<adres>/server/oai/request?verb=Identify" | grep repositoryName
-# Çalışıyorsa REPOS'a ekle, sonra:
-python3 harvest.py meta --repo <yeni_kurum> --delay 3
-python3 harvest.py text --repo <yeni_kurum> --shard 4 --num-shards 5 --workers 1 --delay 3
-```
+Ege bitince Marmara'ya, sonra Hacettepe'ye geçilir — sırayı Göksel duyurur.
 
----
+**İTÜ tam metni bitti** (16.997 belge) — tekrar çekmeyin.
+
+**Aynı anda iki aşama çalıştırmayın:** her process kendi hız sınırlayıcısını tutar;
+ikisi aynı sunucuya giderse istek hızı ikiye katlanır ve nezaket sınırı delinir.
+(Bu tespit PC-1'den geldi.)
+
+**Geçici hatalar tekrar denenir:** `no_text_bundle` gibi kalıcı sonuçlar atlanır ama
+HTTP hatası / zaman aşımı yiyen kayıtlar bir sonraki koşuda yeniden denenir. Yani
+aynı komutu tekrar çalıştırmak güvenlidir ve eksik kalanı toplar.
 
 ## Doğrulanmış arşivler
 
