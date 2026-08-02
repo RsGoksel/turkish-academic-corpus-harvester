@@ -62,8 +62,9 @@ kaldırıyor — tahmin etmeyi bırakıp sayıyoruz.
 Anadolu + OMÜ = 73.728 künye, **sıfır belge**. Kayıt sayısına göre hedef seçmenin
 neden yanlış olduğunun kanıtı. PC-4, bu ölçüm filonun yönünü değiştirdi.
 
-**PC-4:** `probe_repos.py` düzeltmelerin hâlâ origin'de yok, PC-0/1/2/3 bloklu.
-Push eder misin?
+**PC-4 hakkında düzeltme:** "`probe_repos.py` origin'de yok" demiştim, **yanlıştı** --
+dosya orada, satır 36'da `import harvest as H` duruyor. Uzaktan klonlayıp doğruladım.
+Notum bayattı; diğer makineler bloklandıysa sebebi başka.
 
 ## Çıktıları bitince değil, 2 saatte bir gönderin
 
@@ -90,3 +91,49 @@ depoları küçümsemeyin.
 Bir depoyu bitirip diğerine geçmek yerine, mümkünse **farklı depolardan paralel**
 ilerlemek daha iyi. Elinizdeki shard biterse bir sonrakini büyük depodan değil,
 **yeni bir kurumdan** alın.
+
+
+## Künye artık zorunlu değil (PC-4 tespiti)
+
+`text` aşaması `meta.jsonl` yoksa ölüyordu:
+
+    if not meta_path.exists(): raise SystemExit("run `meta` stage first")
+
+Ama `scan` zaten handle, uuid ve indirme adresini üretiyor -- metin aşamasının
+ihtiyaç duyduğu her şeyi. Künyeyi şart koşmak, taraması bitmiş bir depoda tam
+bir OAI hasadını daha dayatıyordu ve hiçbir şey kazandırmıyordu. Yayınlanmış
+künyesi olmayan Bilkent'te `text` anında ölüyordu.
+
+Düzeltildi: künye varsa kullanılır, yoksa tarama kaynak alınır. Künyesiz bir
+depoda uçtan uca test edildi -- 5 taranmış kayıttan TEXT'i olmayan 2'si hiç
+istek harcamadan elendi, kalan 3'ü indirildi.
+
+Yani sıra artık şu ve `meta` aşaması **gerekmiyor**:
+
+    python3 harvest.py scan --repo <depo> --delay 2
+    python3 harvest.py text --repo <depo> --workers 1 --delay 3
+
+Künyeyi yine de çekmek isterseniz (başlık/özet/anahtar kelime gömü verisi için
+değerli) ayrı koşabilirsiniz, ama metin hasadı onu beklemez.
+
+## Örneklem yanlılığının doğru açıklaması (PC-4)
+
+Selçuk'ta probe %78, örneklem %88, gerçek %62,3 çıktı. Bunu "varsayılan sıralama"
+ile açıklamıştım. PC-4'ün açıklaması daha doğru:
+
+> Sebep örnekleme gürültüsü değil, yanlılık: probe tek bir sayfadan 25-50 bitişik
+> kayıt çekiyor, onlar da aynı koleksiyon/yatırma partisinden geliyor ve birbiriyle
+> korele. Efektif örneklem n=50 değil, onun çok altında. Aralıklara olduğundan dar
+> güvenmişiz.
+
+Doğru teşhis bu. Bitişik kayıtlar bağımsız değil; %95 güven aralığı bağımsızlık
+varsayar, o varsayım çöktüğü için gerçek değer aralığın dışında kaldı. Çözüm
+aralığı genişletmek değil, **tam tarama** -- ki artık ucuz.
+
+## Ölçülen kapsamalar
+
+| depo | taranan | TEXT | oran | kaynak |
+|---|---:|---:|---|---|
+| Hacettepe | 5.567 | 5.495 | **%98,7** | PC-2 scan |
+| Bilkent | 9.000 | — | **%96,5** | PC-4 scan (500 kayıttan beri sabit) |
+| Selçuk | 21.925 | 13.637 | **%62,2** | PC-1 + PC-2 scan, birbirini doğruluyor |

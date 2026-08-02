@@ -375,9 +375,14 @@ def harvest_text(workers: int, delay: float, min_chars: int,
     BREAKER = CircuitBreaker()
     print(f"  hız sınırı: global {1/delay:.1f} istek/sn, {workers} işçi")
 
+    # Künye ZORUNLU DEĞİL: tarama zaten handle, uuid ve indirme adresini verir --
+    # yani metin aşamasının ihtiyaç duyduğu her şeyi. Künyeyi şart koşmak, taraması
+    # bitmiş bir depoda tam bir OAI hasadını daha dayatır ve hiçbir şey kazandırmaz.
+    # (PC-4 tespit etti: yayınlanmış künyesi olmayan Bilkent'te `text` anında ölüyordu.)
     meta_path = OUT / "meta.jsonl"
-    if not meta_path.exists():
-        raise SystemExit("run `meta` stage first")
+    scan_files = sorted(OUT.glob("scan*.jsonl"))
+    if not meta_path.exists() and not scan_files:
+        raise SystemExit("önce `meta` ya da `scan` aşamasını çalıştırın")
     suffix = "" if num_shards == 1 else f".shard{shard}"
     out_path = OUT / f"text{suffix}.jsonl"
     fail_path = OUT / f"text{suffix}.failed.jsonl"
@@ -429,9 +434,22 @@ def harvest_text(workers: int, delay: float, min_chars: int,
         print(f"  tarama bulundu: {len(scan):,} kayit, {have:,} tanesinde TEXT var "
               f"-> metni olmayanlar hic istenmeyecek")
 
+    # Kaynak: künye varsa o, yoksa taramanın kendisi. Tarama kayıtları zaten
+    # {handle, uuid, text_urls, bytes} taşıyor.
+    def _source():
+        if meta_path.exists():
+            for line in meta_path.open():
+                try:
+                    yield json.loads(line)
+                except Exception:
+                    continue
+        else:
+            print(f"  künye yok -- {len(scan):,} taranmış kayıt kaynak alınıyor")
+            for rec in scan.values():
+                yield {"handle": rec.get("handle")}
+
     rows = []
-    for line in meta_path.open():
-        r = json.loads(line)
+    for r in _source():
         h = r.get("handle")
         if not h or h in done:
             continue
