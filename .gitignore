@@ -2,3 +2,7 @@ data/
 .venv/
 __pycache__/
 *.tar.gz
+
+*.jsonl.gz
+*.tar.gz
+data/
