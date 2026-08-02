@@ -50,22 +50,87 @@ NS = {"oai": "http://www.openarchives.org/OAI/2.0/",
 UA = {"User-Agent": "ITU-LLM-corpus-builder/1.0 (academic use; contact via ITU)"}
 
 
+class RateLimiter:
+    """Bounds the TOTAL request rate across every worker thread.
+
+    The first version accepted --delay but never used it in the text stage: a
+    ThreadPoolExecutor hammered the server with `workers` continuous streams, and
+    each document costs four requests. Across five machines that is twenty
+    unthrottled streams -- a reliable way to get an entire university's IP range
+    to block us. The limiter serialises request starts so `min_interval` is
+    honoured globally, not per thread.
+    """
+
+    def __init__(self, min_interval: float):
+        import threading
+        self.min_interval = min_interval
+        self._lock = threading.Lock()
+        self._last = 0.0
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            gap = self.min_interval - (now - self._last)
+            if gap > 0:
+                time.sleep(gap)
+            self._last = time.monotonic()
+
+
+class CircuitBreaker:
+    """Stops the run after repeated server errors instead of grinding on."""
+
+    def __init__(self, threshold: int = 12):
+        import threading
+        self.threshold = threshold
+        self._lock = threading.Lock()
+        self.consecutive = 0
+        self.tripped = False
+
+    def record(self, ok: bool) -> None:
+        with self._lock:
+            if ok:
+                self.consecutive = 0
+            else:
+                self.consecutive += 1
+                if self.consecutive >= self.threshold:
+                    self.tripped = True
+
+
+LIMITER: "RateLimiter | None" = None
+BREAKER: "CircuitBreaker | None" = None
+
+
 def get(url: str, tries: int = 4, delay: float = 2.0) -> bytes:
     last = None
     for i in range(tries):
+        if BREAKER is not None and BREAKER.tripped:
+            raise RuntimeError("circuit breaker tripped: too many server errors")
+        if LIMITER is not None:
+            LIMITER.wait()
         try:
             req = urllib.request.Request(url, headers=UA)
             with urllib.request.urlopen(req, timeout=90) as r:
-                return r.read()
+                data = r.read()
+            if BREAKER is not None:
+                BREAKER.record(True)
+            return data
         except Exception as e:  # noqa: BLE001 - university server, transient errors expected
             last = e
-            time.sleep(delay * (i + 1))
+            code = getattr(e, "code", None)
+            if BREAKER is not None:
+                BREAKER.record(code in (429, 500, 502, 503, 504) or code is None)
+            # 429/5xx mean "slow down", so back off much harder than on a hiccup.
+            backoff = delay * (4 ** i) if code in (429, 500, 502, 503, 504) else delay * (i + 1)
+            time.sleep(min(backoff, 120))
     raise last  # type: ignore[misc]
 
 
 # --------------------------------------------------------------- stage 1: metadata
 
 def harvest_meta(delay: float) -> None:
+    global LIMITER, BREAKER
+    LIMITER = RateLimiter(delay)
+    BREAKER = CircuitBreaker()
     OUT.mkdir(parents=True, exist_ok=True)
     out_path = OUT / "meta.jsonl"
     token_path = OUT / ".meta_token"
@@ -162,6 +227,11 @@ def harvest_text(workers: int, delay: float, min_chars: int,
                  shard: int = 0, num_shards: int = 1) -> None:
     import concurrent.futures as cf
 
+    global LIMITER, BREAKER
+    LIMITER = RateLimiter(delay)
+    BREAKER = CircuitBreaker()
+    print(f"  hız sınırı: global {1/delay:.1f} istek/sn, {workers} işçi")
+
     meta_path = OUT / "meta.jsonl"
     if not meta_path.exists():
         raise SystemExit("run `meta` stage first")
@@ -238,14 +308,18 @@ def harvest_text(workers: int, delay: float, min_chars: int,
                 print(f"  {i}/{len(rows)} ok={ok} fail={bad} "
                       f"{chars/1e6:.1f}M karakter (~{chars/4/1e6:.1f}M token) "
                       f"{rate:.1f}/s ETA {eta:.1f}h", flush=True)
+    if BREAKER is not None and BREAKER.tripped:
+        print("!! DEVRE KESİCİ ATTI — sunucu üst üste hata verdi. Saatler sonra "
+              "--delay 5 --workers 1 ile tekrar dene.")
     print(f"done: ok={ok} fail={bad} chars={chars/1e6:.1f}M (~{chars/4/1e6:.0f}M token)")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("stage", choices=["meta", "text"])
-    ap.add_argument("--workers", type=int, default=4)
-    ap.add_argument("--delay", type=float, default=0.5)
+    ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--delay", type=float, default=1.5,
+                    help="minimum seconds BETWEEN requests, enforced globally")
     ap.add_argument("--min-chars", type=int, default=2000)
     ap.add_argument("--repo", default="itu", choices=list(REPOS))
     ap.add_argument("--shard", type=int, default=0,

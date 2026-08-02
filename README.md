@@ -11,7 +11,7 @@ Türkiye'deki üniversitelerin **açık erişim** kurumsal arşivlerinden (DSpac
 Bu sunucular üniversitelerin kütüphane altyapısı, CDN değil. **Aşırı yükleme yaparsak IP'miz banlanır ve herkes için erişim kapanır.**
 
 - `--delay 3` (varsayılan) altına inme
-- `--workers 4` üstüne çıkma
+- `--workers 2` üstüne çıkma — istek hızı artık GLOBAL sınırlı (tüm işçiler toplamı)
 - Aynı üniversiteye **aynı anda iki makine** koşturma — shard sistemi bunu zaten engelliyor
 - HTTP 429 / 500 görürsen **dur**, birkaç saat bekle, sonra tekrar dene
 
@@ -54,7 +54,7 @@ python3 -c "import urllib.request, xml.etree.ElementTree; print('hazır')"
 ### PC-0 — dual5090 (ana makine, Göksel'in)
 Bu makine İTÜ'yü zaten bitirdi (68.911 künye + 16.997 tam metin) ve koordinasyonu yapıyor.
 ```bash
-python3 harvest.py text --repo itu --shard 0 --num-shards 5 --workers 4 --delay 1
+python3 harvest.py text --repo itu --shard 0 --num-shards 5 --workers 2 --delay 1.5
 ```
 
 ### PC-1
@@ -62,19 +62,19 @@ python3 harvest.py text --repo itu --shard 0 --num-shards 5 --workers 4 --delay 
 # 1) Önce künyeleri çek (yoksa)
 python3 harvest.py meta --repo ege --delay 3
 # 2) Sonra tam metin — kendi payın
-python3 harvest.py text --repo ege --shard 1 --num-shards 5 --workers 3 --delay 1
+python3 harvest.py text --repo ege --shard 1 --num-shards 5 --workers 1 --delay 3
 ```
 
 ### PC-2
 ```bash
 python3 harvest.py meta --repo marmara --delay 3
-python3 harvest.py text --repo marmara --shard 2 --num-shards 5 --workers 3 --delay 1
+python3 harvest.py text --repo marmara --shard 2 --num-shards 5 --workers 1 --delay 3
 ```
 
 ### PC-3
 ```bash
 python3 harvest.py meta --repo hacettepe --delay 5   # bu sunucu hassas, delay yüksek
-python3 harvest.py text --repo hacettepe --shard 3 --num-shards 5 --workers 2 --delay 2
+python3 harvest.py text --repo hacettepe --shard 3 --num-shards 5 --workers 1 --delay 3
 ```
 
 ### PC-4 — keşif görevi
@@ -84,7 +84,7 @@ Yeni üniversite arşivi bul (aşağıdaki listeden test et), çalışanı `harv
 curl -s "https://<adres>/server/oai/request?verb=Identify" | grep repositoryName
 # Çalışıyorsa REPOS'a ekle, sonra:
 python3 harvest.py meta --repo <yeni_kurum> --delay 3
-python3 harvest.py text --repo <yeni_kurum> --shard 4 --num-shards 5 --workers 3 --delay 1
+python3 harvest.py text --repo <yeni_kurum> --shard 4 --num-shards 5 --workers 1 --delay 3
 ```
 
 ---
