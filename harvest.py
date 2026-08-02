@@ -50,6 +50,17 @@ NS = {"oai": "http://www.openarchives.org/OAI/2.0/",
 UA = {"User-Agent": "ITU-LLM-corpus-builder/1.0 (academic use; contact via ITU)"}
 
 
+class RestrictedError(Exception):
+    """The item exists and the server answered correctly -- we simply may not read it.
+
+    Embargoed and access-restricted deposits return 401/403 on the bitstream while
+    /pid/find and the item call both return 200. This is a third category that the
+    transient/permanent split missed: permanent, but not the server's fault. It must
+    not be retried (retrying cannot help) and must not count against the circuit
+    breaker (the server is healthy).
+    """
+
+
 class RateLimiter:
     """Bounds the TOTAL request rate across every worker thread.
 
@@ -117,10 +128,17 @@ def get(url: str, tries: int = 4, delay: float = 2.0) -> bytes:
         except Exception as e:  # noqa: BLE001 - university server, transient errors expected
             last = e
             code = getattr(e, "code", None)
+            if code in (401, 403):
+                raise RestrictedError(f"HTTP {code}") from e
+            server_error = code in (429, 500, 502, 503, 504) or code is None
             if BREAKER is not None:
-                BREAKER.record(code in (429, 500, 502, 503, 504) or code is None)
+                # record(ok): True resets the counter, False increments it. The first
+                # version passed True *for server errors*, so the breaker reset itself
+                # on exactly the condition it was built to catch, while a handful of
+                # 4xx responses could halt an otherwise healthy run.
+                BREAKER.record(not server_error)
             # 429/5xx mean "slow down", so back off much harder than on a hiccup.
-            backoff = delay * (4 ** i) if code in (429, 500, 502, 503, 504) else delay * (i + 1)
+            backoff = delay * (4 ** i) if server_error else delay * (i + 1)
             time.sleep(min(backoff, 120))
     raise last  # type: ignore[misc]
 
@@ -265,12 +283,16 @@ def harvest_text(workers: int, delay: float, min_chars: int,
     # be retried on the next run; treating those as final silently drops documents
     # that were merely unlucky.
     PERMANENT = {"no_text_bundle", "no_uuid"}
-    if fail_path.exists():
-        for line in fail_path.open():
+    restricted_path = OUT / f"restricted{suffix}.jsonl"
+    for path in (fail_path, restricted_path):
+        if not path.exists():
+            continue
+        for line in path.open():
             try:
                 rec = json.loads(line)
                 err = str(rec.get("error", ""))
-                if err in PERMANENT or err.startswith("too_short"):
+                if (err in PERMANENT or err.startswith("too_short")
+                        or err.startswith("restricted_")):
                     done.add(rec["handle"])
             except Exception:
                 pass
@@ -308,6 +330,8 @@ def harvest_text(workers: int, delay: float, min_chars: int,
             if len(t) < min_chars:
                 return h, None, f"too_short_{len(t)}", r
             return h, t, None, r
+        except RestrictedError as e:
+            return h, None, f"restricted_{e}", r
         except Exception as e:  # noqa: BLE001
             return h, None, f"{type(e).__name__}", r
 
@@ -315,6 +339,7 @@ def harvest_text(workers: int, delay: float, min_chars: int,
     chars = 0
     t0 = time.time()
     with out_path.open("a") as fout, fail_path.open("a") as ffail, \
+            restricted_path.open("a") as frestricted, \
             cf.ThreadPoolExecutor(workers) as ex:
         for i, (h, text, err, r) in enumerate(ex.map(work, rows), 1):
             if text:
@@ -330,10 +355,14 @@ def harvest_text(workers: int, delay: float, min_chars: int,
                 ok += 1
                 chars += len(text)
             else:
-                ffail.write(json.dumps({"handle": h, "error": err}, ensure_ascii=False) + "\n")
+                # Restricted items go to their own file: they are permanent for now,
+                # but embargoes lift, so a single future sweep can pick them up
+                # without re-crawling everything.
+                target = frestricted if str(err).startswith("restricted_") else ffail
+                target.write(json.dumps({"handle": h, "error": err}, ensure_ascii=False) + "\n")
                 bad += 1
             if i % 50 == 0:
-                fout.flush(); ffail.flush()
+                fout.flush(); ffail.flush(); frestricted.flush()
                 rate = i / max(time.time() - t0, 1)
                 eta = (len(rows) - i) / max(rate, 1e-6) / 3600
                 print(f"  {i}/{len(rows)} ok={ok} fail={bad} "
