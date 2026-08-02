@@ -35,11 +35,19 @@ from pathlib import Path
 # DSpace pre-extracts PDF text into a TEXT bundle. The technique that worked for ITU
 # therefore generalizes to the whole national repository network -- all open access,
 # no credentials, no publisher licences involved.
+# Names are a convenience, not a whitelist: --repo also accepts a bare base URL, so
+# probe_repos.py can hand the fleet a new target without a code change. Choosing
+# targets by record count was a mistake -- Ege holds the most records and yields the
+# fewest documents. The number that matters is records * TEXT-bundle coverage, and
+# these are ordered by it.
 REPOS = {
-    "itu":       "https://polen.itu.edu.tr",
-    "ege":       "https://acikerisim.ege.edu.tr",
-    "marmara":   "https://openaccess.marmara.edu.tr",
+    "selcuk":    "https://acikerisim.selcuk.edu.tr",   # 78% coverage, ~42,800 docs
+    "itu":       "https://polen.itu.edu.tr",           # 44%, ~30,300  (harvested)
+    "uludag":    "https://acikerisim.uludag.edu.tr",   # 48%, ~24,900
+    "marmara":   "https://openaccess.marmara.edu.tr",  # 16.5%, ~14,500
+    "ege":       "https://acikerisim.ege.edu.tr",      # 4%, ~4,800
     "hacettepe": "https://openaccess.hacettepe.edu.tr",
+    "anadolu":   "https://acikerisim.anadolu.edu.tr",  # 0% -- metadata only
 }
 REPO = "itu"
 OAI = ""
@@ -338,8 +346,27 @@ def harvest_text(workers: int, delay: float, min_chars: int,
     ok = bad = 0
     chars = 0
     t0 = time.time()
+    class _Lazy:
+        """Creates the file on first write, so a run with no restricted items does
+        not leave an empty file behind to travel into the tarball (PC-1)."""
+
+        def __init__(self, path): self.path, self.f = path, None
+
+        def write(self, s):
+            if self.f is None:
+                self.f = self.path.open("a")
+            self.f.write(s)
+
+        def flush(self):
+            if self.f is not None:
+                self.f.flush()
+
+        def close(self):
+            if self.f is not None:
+                self.f.close()
+
+    frestricted = _Lazy(restricted_path)
     with out_path.open("a") as fout, fail_path.open("a") as ffail, \
-            restricted_path.open("a") as frestricted, \
             cf.ThreadPoolExecutor(workers) as ex:
         for i, (h, text, err, r) in enumerate(ex.map(work, rows), 1):
             if text:
@@ -381,15 +408,22 @@ def main():
     ap.add_argument("--delay", type=float, default=1.5,
                     help="minimum seconds BETWEEN requests, enforced globally")
     ap.add_argument("--min-chars", type=int, default=2000)
-    ap.add_argument("--repo", default="itu", choices=list(REPOS))
+    ap.add_argument("--repo", default="itu",
+                    help=f"short name ({', '.join(REPOS)}) or a base URL")
     ap.add_argument("--shard", type=int, default=0,
                     help="which slice of the work this machine takes (0-based)")
     ap.add_argument("--num-shards", type=int, default=1,
                     help="how many machines are splitting the work")
     a = ap.parse_args()
     global OAI, API, OUT, REPO
-    REPO = a.repo
-    base = REPOS[a.repo]
+    if a.repo.startswith("http"):
+        base = a.repo.rstrip("/")
+        REPO = base.split("//")[-1].split(".")[0 if base.count(".") < 3 else 1]
+    else:
+        if a.repo not in REPOS:
+            ap.error(f"bilinmeyen depo {a.repo!r}; ya {', '.join(REPOS)} "
+                     f"ya da tam adres verin (https://...)")
+        base, REPO = REPOS[a.repo], a.repo
     OAI = f"{base}/server/oai/request"
     API = f"{base}/server/api"
     OUT = Path(f"data/repos/{a.repo}")
