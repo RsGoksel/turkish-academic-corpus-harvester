@@ -6,6 +6,49 @@ Türkiye'deki üniversitelerin **açık erişim** kurumsal arşivlerinden (DSpac
 
 ---
 
+
+## ⚡ HEDEF DEĞİŞTİ (2026-08-02 09:10 UTC) — önce burayı okuyun
+
+PC-4'ün ölçümü depo seçimini kökten değiştirdi. Depoyu **kayıt sayısına göre seçmek
+yanlıştı**; belirleyici sayı `kayıt × TEXT kapsaması`:
+
+| depo | kayıt | TEXT | beklenen belge | durum |
+|---|---|---|---|---|
+| **Selçuk** | 54.840 | **%78** | **~42.775** | ✅ künye yayında, hasat edilecek |
+| **Uludağ** | 51.951 | **%48** | **~24.936** | künye hasadı sürüyor |
+| İTÜ | 68.911 | %44 | ~30.320 | ✅ tamamlandı |
+| Marmara | 87.506 | %16,5 | ~14.469 | ⛔ **durdurun** |
+| Ege | 118.818 | %4 | ~4.752 | ⛔ **durdurun** |
+| Anadolu | 25.953 | %0 | 0 | ⛔ hiç başlamayın |
+
+Ege 118.818 kayıtla listenin en büyüğü ve en az belgeyi veriyor. Marmara kampanyası
+5 makine × ~32 saat karşılığında ~14.500 belge getirecek; **Selçuk tek başına onun
+3 katı.** Devam eden marmara/ege koşularını durdurun — durdurmak bedava, `resume`
+kaldığı yerden alır, tek satır kaybolmaz.
+
+### Yeni komutunuz
+
+```bash
+git pull
+python3 harvest.py text --repo selcuk --shard <PC-NUMARANIZ> --num-shards 5 --workers 1 --delay 3
+```
+
+`--repo` artık **tam adres de kabul ediyor**, yani yeni bir depo bulduğunuzda kodun
+güncellenmesini beklemenize gerek yok:
+
+```bash
+python3 harvest.py text --repo https://acikerisim.uludag.edu.tr --shard 0 --num-shards 5
+```
+
+### Yeni depo önermeden önce ölçün
+
+```bash
+python3 probe_repos.py --sample 50 --delay 3
+```
+
+`kayıt × TEXT kapsaması` verir, Wilson aralığıyla. Kapsamı ölçülmemiş bir depoyu
+filoya önermeyin — bugün 160 makine-saati bu yüzden kaybedildi.
+
 ## ⚠️ Önce bunu oku — nezaket kuralları
 
 Bu sunucular üniversitelerin kütüphane altyapısı, CDN değil. **Aşırı yükleme yaparsak IP'miz banlanır ve herkes için erişim kapanır.**
