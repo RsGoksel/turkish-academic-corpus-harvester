@@ -30,12 +30,22 @@ from pathlib import Path
 # n küçükse aralık geniştir ve bu tabloda görünür.
 MEASURED = {
     # depo:        (kayıt,  paket_var, dolu,   okunabilir, kaynak)
-    "bilkent":     (52198, 0.961, 0.876, 0.525, "PC-4 tam tarama + PC-0 n=40 erişim"),
+    # Erişim oranı FİİLİ İNDİRMEDEN, örneklemden değil. PC-0'ın n=40 probe'u %52,5
+    # demişti; PC-4'ün 6.706 gerçek indirmesi %34,5 [33,4-35,6] ölçtü -- probe'un
+    # %95 aralığının ([37,0-68,0]) altında. Probe'un 40 örneği 40 farklı sayfadandı,
+    # yani kümelenme değil; sapmanın sebebi açıklanamadı. Sayım örneklemi yener.
+    "bilkent":     (52198, 0.961, 0.876, 0.345, "PC-4 fiili indirme n=6.706"),
     "hacettepe":   (32978, 0.987, 0.711, None,  "PC-2 tam shard sayımı"),
     "selcuk":      (54829, 0.623, 0.569, None,  "PC-1+PC-2 scan n=21.925"),
     "dicle":       (30146, 0.422, 0.352, None,  "PC-3 scan"),
-    "aksaray":     (13016, 0.885, 0.885, 0.900, "PC-4 probe"),
-    "adiyaman":    (16094, 0.250, 0.250, 1.000, "PC-4 probe — n=5 örneklem %100 demişti"),
+    # Sayfa-kümeli örnekleme düzeltilince İKİSİ DE kaydı, ters yönlerde. PC-4'ün
+    # ölçümü: eski yöntem 8 sayfa × 25 kayıt (bitişik, korele), yeni yöntem
+    # 40 sayfa × 1 kayıt. Adıyaman'da örneklenen 40 sayfanın yalnızca 20'sinde
+    # tek bir uygun kayıt vardı -- yani %49,2 "her sayfanın yarısı dolu" değil,
+    # "sayfaların yarısı tamamen dolu, yarısı tamamen boş" demek.
+    # Sonuç: ikisi birbirinin güven aralığında. "Aksaray 2,5 kat iyi" bir artefaktmış.
+    "aksaray":     (13016, 0.907, 0.907, 0.725, "PC-4 n=1000, 40 sayfa × 1"),
+    "adiyaman":    (16094, 0.492, 0.492, 1.000, "PC-4 n=1000, 40 sayfa × 1"),
     "ege":        (118666, 0.040, None,  None,  "PC-4 probe (n=5 örneklem %100 demişti)"),
     "omu":         (46134, 0.000, None,  None,  "tam probe 0/50"),
     "itu_polen":   (68911, 0.247, 0.247, 1.000, "TAMAMLANDI: 16.997 belge / 68.911"),

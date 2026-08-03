@@ -66,10 +66,51 @@ aldık — %0,14 hata.
 
 | depo | kayıt | paket | dolu | okunabilir | **BELGE** | kaynak |
 |---|---:|---:|---:|---:|---:|---|
-| bilkent | 52,198 | %96.1 | %87.6 | %52.5 | **24,005** | PC-4 tam tarama + PC-0 n=40 erişim |
 | itu_polen | 68,911 | %24.7 | %24.7 | %100.0 | **17,021** | TAMAMLANDI: 16.997 belge / 68.911 |
-| aksaray | 13,016 | %88.5 | %88.5 | %90.0 | **10,367** | PC-4 probe |
-| adiyaman | 16,094 | %25.0 | %25.0 | %100.0 | **4,023** | PC-4 probe — n=5 örneklem %100 demişti |
+| bilkent | 52,198 | %96.1 | %87.6 | %34.5 | **15,775** | PC-4 fiili indirme n=6.706 |
+| aksaray | 13,016 | %90.7 | %90.7 | %72.5 | **8,558** | PC-4 n=1000, 40 sayfa × 1 |
+| adiyaman | 16,094 | %49.2 | %49.2 | %100.0 | **7,918** | PC-4 n=1000, 40 sayfa × 1 |
+
+#### Dördüncü yanlılık: sayfa-kümeli örnekleme
+
+PC-4, kendi aracındaki bir yanlılığı buldu ve düzeltti: kapsama 8 sayfadan
+**bitişik** 25 kayıt çekerek ölçülüyordu. Bitişik kayıtlar aynı yatırma
+partisinden gelir ve korelelidir; efektif örneklem nominalinin çok altındadır.
+Yeni yöntem: **40 sayfa × 1 kayıt**.
+
+Düzeltince iki hedef de kaydı, üstelik **ters yönlerde**:
+
+| | eski (8×25) | yeni (40×1) |
+|---|---|---|
+| Aksaray kapsama | %88,5 | %90,7 |
+| Aksaray okunabilir | %90,0 | **%72,5** |
+| Aksaray beklenti | ~10.367 | **~8.558** |
+| Adıyaman kapsama | %25,0 | **%49,2** |
+| Adıyaman beklenti | ~4.023 | **~7.918** |
+
+**"Aksaray 2,5 kat daha iyi" bir ölçüm artefaktıydı.** İkisi artık birbirinin
+güven aralığında; hacimce anlamlı fark yok.
+
+Kümelenmenin sertliği: Adıyaman'da örneklenen 40 sayfanın yalnızca 20'sinde tek
+bir uygun kayıt vardı. Yani %49,2 "her sayfanın yarısı dolu" değil, **"sayfaların
+yarısı tamamen dolu, yarısı tamamen boş"** demek.
+
+**Aksaray seçildi ama gerekçesi değişti:** hacim değil, bölgesel çeşitlilik.
+
+#### Bilkent: fiili sayım, probe değil
+
+PC-0'ın n=40 probe'u erişimi %52,5 ölçtü; PC-4'ün **6.706 fiili indirmesi %34,5
+[33,4-35,6]** ölçtü — probe'un %95 aralığının ([37,0-68,0]) **altında**.
+Kontrol edildi: probe'un 40 örneği 40 **farklı** sayfadan geliyordu, yani
+kümelenme değil. Sapmanın sebebi **açıklanamadı**. Tabloya fiili sayım girdi;
+6.706 örnek 40'ı yener, mekanizma bilinmese de.
+
+#### Uyarı: eski yöntemle ölçülen her depo aynı yanlılığı taşıyor
+
+Üç-kapı modelinin İTÜ'de %0,14 tutması **modeli** doğrular, **girdileri** değil —
+İTÜ'de üçüncü kapı zaten dardı, yanlı bir okunabilirlik ölçümü sonucu bozmamış
+olabilir. Erişimi eski yöntemle ölçülmüş depolar yeni örneklemeyle **tekrar
+koşulmalı**. (PC-4 tespit etti ve öneriyor.)
 
 ### Erişim ölçülmedi — sayı VERİLMİYOR
 
