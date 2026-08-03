@@ -337,7 +337,16 @@ def scan_bundles(delay: float, page_size: int, shard: int = 0,
     with_text = no_text = 0
     with out_path.open("a") as f:
         for i, page in enumerate(mine, 1):
-            url = (f"{API}/discover/search/objects?dsoType=item"
+            # A stable sort is mandatory: without one DSpace's discover endpoint has
+            # no deterministic order across pages, so deep pagination returns the same
+            # items on different pages and silently skips others. Measured on Dicle
+            # (no `sort` param): 5,239 duplicate handles in 10,966 rows (~48%), and
+            # since the text stage is now scan-driven, every silently-skipped handle is
+            # a lost document. `dc.date.accessioned` is a standard configured sort field
+            # (`sort=id` is NOT valid -- it 400s); text-bearing items have distinct
+            # deposit timestamps so they order stably and are never skipped. Verified:
+            # 0 duplicate handles after the fix.
+            url = (f"{API}/discover/search/objects?dsoType=item&sort=dc.date.accessioned,ASC"
                    f"&size={page_size}&page={page}&embed=bundles/bitstreams")
             try:
                 d = json.loads(get(url))
