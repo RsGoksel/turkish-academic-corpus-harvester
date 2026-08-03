@@ -223,11 +223,19 @@ def probe_access(base: str, sample: int, seed: int, page_size: int = 25,
         # handful of sampled pages by the repository's TOTAL record count reported
         # Adiyaman at 0.31% coverage and 50 expected documents out of 16,094 records
         # -- the sample size has to divide the sample, not the population.
+        # One item per page, across as many pages as we want samples -- NOT 25 items
+        # from each of 8 pages. Items inside a page are one deposit batch and share
+        # whatever access policy that batch was given, so 40 neighbours are closer to
+        # 8 independent draws than 40. That clustering is what made the n=50 coverage
+        # probes overconfident, and it bit this checker too: at Bilkent a page-clustered
+        # n=40 read 52.5% readable where 6,706 real fetches measured 34.5% -- intervals
+        # that do not even overlap. Trading 8 requests for 40 buys real independence.
         n_text = examined = 0
-        for page in rng.sample(range(n_pages), min(8, n_pages)):
+        for page in rng.sample(range(n_pages), min(sample, n_pages)):
             d = json.loads(H.get(
                 f"{api}/discover/search/objects?dsoType=item&size={page_size}"
                 f"&page={page}&embed=bundles/bitstreams", tries=2, delay=2.0))
+            taken_here = False
             objs = ((((d.get("_embedded") or {}).get("searchResult") or {})
                      .get("_embedded") or {}).get("objects") or [])
             for o in objs:
@@ -245,8 +253,12 @@ def probe_access(base: str, sample: int, seed: int, page_size: int = 25,
                     # Same empty-file guard as the scan branch: the bundle being
                     # present says nothing about the file inside it having content.
                     if href and (b.get("sizeBytes") or 0) >= min_bytes:
-                        with_text.append(href)
                         n_text += 1
+                        # Coverage still counts every item on the page (cheap, already
+                        # fetched), but only ONE of them becomes an access sample.
+                        if not taken_here:
+                            with_text.append(href)
+                            taken_here = True
                         break
         out["source"] = "discover"
 
