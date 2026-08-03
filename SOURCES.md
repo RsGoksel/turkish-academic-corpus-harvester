@@ -7,6 +7,41 @@
 
 Son güncelleme: 2026-08-02 12:45 UTC
 
+
+## ⚠ "TEXT paketi var" ≠ "dosya dolu" — kapsama oranları şişikti
+
+DSpace bazı kayıtlarda TEXT paketi oluşturur ama dosyayı **boş bırakır**: 2 baytlık
+yer tutucular. Tarama "paket var mı" diye baktığı için bu kayıtlar kapsama oranına
+dahil oluyordu. PC-2 kendi shard'ında tespit etti; dört depoda doğruladım:
+
+| depo | "TEXT paketi var" | **gerçek (>2 KB)** | boş dosya |
+|---|---:|---:|---:|
+| hacettepe | %98,7 | **%71,1** | 1.584 |
+| bilkent | %96,1 | **%87,6** | 352 |
+| selcuk | %62,3 | **%56,9** | 270 |
+| dicle | %42,2 | **%35,2** | 239 |
+
+PC-2'nin kendi shard'ında ölçtüğü %70,0 ile benim taramadan hesapladığım %71,1
+bağımsız olarak birbirini doğruluyor.
+
+**Düzeltildi:** `harvest.py` artık `--min-bytes 2048` uygular. Bayt bilgisi zaten
+taramada vardı, kullanılmıyordu. Boş paketler **indirilmeden** elenir -- hem doğru
+sayı hem daha az istek.
+
+Aşağıdaki tabloda "TEXT kapsaması" sütunu taramadan gelen ham orandır. Gerçek
+verim için yukarıdaki tabloya bakın; ölçülmemiş depolarda gerçek değer **daha
+düşük** olacaktır.
+
+## Shard atamasında boşluk
+
+Bir depoya tek makine atandığında ve o makine `--num-shards 5` ile koştuğunda,
+deponun **%80'i sahipsiz kalır**. Hacettepe'de tam bu oldu: PC-2 shard 2/5'te
+6.506 kayıttan 4.553 belge çıkardı (%70), ama shard 0/1/3/4'teki 26.472 kayda
+kimse atanmadı.
+
+**Kural:** tek makineye verilen depo `--num-shards` almaz. Shard yalnızca aynı
+depoya birden fazla makine koşturulduğunda kullanılır.
+
 ## Metin üreten depolar — verime göre
 
 | depo | kayıt | TEXT kapsaması | tahmini belge | kaynak | atanan |

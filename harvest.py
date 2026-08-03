@@ -507,8 +507,12 @@ def harvest_text(workers: int, delay: float, min_chars: int,
                 scan[h] = rec          # later files win; re-scans are corrections
     if scan:
         have = sum(1 for v in scan.values() if v.get("text_urls"))
-        print(f"  tarama bulundu: {len(scan):,} kayit, {have:,} tanesinde TEXT var "
-              f"-> metni olmayanlar hic istenmeyecek")
+        real = sum(1 for v in scan.values()
+                   if v.get("text_urls") and (v.get("bytes") or 0) >= min_chars)
+        print(f"  tarama: {len(scan):,} kayit | TEXT paketi var {have:,} (%{100*have/max(1,len(scan)):.1f}) "
+              f"| DOLU {real:,} (%{100*real/max(1,len(scan)):.1f})")
+        if have > real:
+            print(f"  {have-real:,} kayitta paket var ama dosya bos -- indirilmeyecek")
 
     # Kaynak: künye varsa o, yoksa taramanın kendisi. Tarama kayıtları zaten
     # {handle, uuid, text_urls, bytes} taşıyor.
