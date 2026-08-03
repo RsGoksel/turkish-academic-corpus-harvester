@@ -1,8 +1,17 @@
 data/
 .venv/
+.venv-hf/
 __pycache__/
 *.tar.gz
 
 *.jsonl.gz
 *.tar.gz
 data/
+
+# makineye özel koşu artıkları
+*.log
+.sent_*
+run_*.sh
+refetch_*.sh
+send_scan_when_done.sh
+hf_send.py

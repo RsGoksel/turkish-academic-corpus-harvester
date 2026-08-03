@@ -153,6 +153,54 @@ def get(url: str, tries: int = 4, delay: float = 2.0) -> bytes:
 
 # --------------------------------------------------------------- stage 1: metadata
 
+_HANDLE = r"[0-9][0-9.]*/[^/\s]+"
+_HANDLE_URL = re.compile(rf"^https?://hdl\.handle\.net/({_HANDLE})$")
+
+
+def handle_from(identifiers, oai_id=None):
+    """Pull the record's OWN handle out of dc.identifier.
+
+    Some deposits paste an entire references section into dc.identifier, and a
+    citation inside it can mention a handle URL. Searching for the substring
+    "hdl.handle.net" and splitting on it therefore produced a "handle" made of
+    bibliography text -- nine of them across the fleet's metadata. Those never
+    resolve, and where the cited handle happens to be well formed the request goes
+    to a DIFFERENT institution's item (10871/..., 1765/... in Hacettepe records),
+    which is worse than failing. Accept only an identifier that is ENTIRELY a
+    handle URL, and fall back to the OAI id, whose suffix is the handle in every
+    DSpace repository we harvest.
+    """
+    for v in identifiers:
+        m = _HANDLE_URL.match(v.strip())
+        if m:
+            return m.group(1)
+    if oai_id and ":" in oai_id:
+        tail = oai_id.rsplit(":", 1)[-1].strip()
+        if re.fullmatch(_HANDLE, tail):
+            return tail
+    return None
+
+
+PAGE = 100          # OAI-PMH ListRecords sayfa boyutu (DSpace varsayılanı)
+_OFFSET_TOKEN = re.compile(r"^(.*?)(\d+)$")
+
+
+def _skip_page(token):
+    """Bozuk bir sayfayı atlamak için resumption token'ı bir sayfa ileri taşır.
+
+    DSpace'in token'ı sonda ofset taşır (`oai_dc////4400`). Sondaki sayıyı PAGE
+    kadar artırmak bir sonraki sayfaya geçirir. Token bu kalıba uymuyorsa None
+    döner ve çağıran hatayı yükseltir -- körlemesine devam etmektense durmak
+    yeğdir.
+    """
+    if not token:
+        return None
+    m = _OFFSET_TOKEN.match(token)
+    if not m:
+        return None
+    return f"{m.group(1)}{int(m.group(2)) + PAGE}"
+
+
 def harvest_meta(delay: float) -> None:
     global LIMITER, BREAKER
     LIMITER = RateLimiter(delay)
@@ -177,7 +225,26 @@ def harvest_meta(delay: float) -> None:
         while True:
             url = (f"{OAI}?verb=ListRecords&resumptionToken={urllib.parse.quote(token)}"
                    if token else f"{OAI}?verb=ListRecords&metadataPrefix=oai_dc")
-            root = ET.fromstring(get(url))
+            try:
+                root = ET.fromstring(get(url))
+            except Exception:
+                # A SINGLE poisoned page can answer 500 forever. Hacettepe does this
+                # at offsets 4400 and 15700 while 4500/4600/5000/10000 are healthy,
+                # so "the server is fragile, use a longer delay" never helps -- every
+                # retry hits the same record and the run dies with 28,000 of 33,000
+                # records unharvested. That is how the published Hacettepe metadata
+                # came to hold only 4,400 rows without anyone noticing. Resumption
+                # tokens here are plain offsets, so step over the bad page instead:
+                # losing 100 records beats losing the rest of the repository.
+                skipped = _skip_page(token)
+                if skipped is None:
+                    raise
+                print(f"  !! sayfa kalıcı hata verdi, {token!r} -> {skipped!r} "
+                      f"(en fazla {PAGE} künye atlandı)", flush=True)
+                token = skipped
+                token_path.write_text(token)
+                time.sleep(delay)
+                continue
             for rec in root.findall(".//oai:record", NS):
                 oid_el = rec.find(".//oai:identifier", NS)
                 oid = oid_el.text if oid_el is not None else None
@@ -190,9 +257,9 @@ def harvest_meta(delay: float) -> None:
                             if e.text and e.text.strip()]
                     if vals:
                         row[field] = vals
-                handles = [v for v in row.get("identifier", []) if "hdl.handle.net" in v]
-                if handles:
-                    row["handle"] = handles[0].split("hdl.handle.net/")[-1]
+                h = handle_from(row.get("identifier", []), oid)
+                if h:
+                    row["handle"] = h
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
                 seen.add(oid)
                 n += 1
@@ -455,13 +522,25 @@ def harvest_text(workers: int, delay: float, min_chars: int,
             continue
         hit = scan.get(h)
         if hit is not None:
-            if not hit.get("text_urls"):
+            # A TEXT bundle can exist and still hold nothing: Hacettepe ships
+            # 2-byte placeholder bitstreams, and 1,546 of one shard's 1,740
+            # too_short results were exactly 0 characters. The scan already
+            # recorded sizeBytes, and the two populations do not overlap -- empty
+            # ones top out at 368 bytes, real ones start at 2,185 -- so the size
+            # settles it without a request. Bytes >= characters for UTF-8 and
+            # clean() only removes, so anything under min_chars could never have
+            # passed the length check anyway; skipping it discards nothing.
+            n_bytes = hit.get("bytes")
+            empty = not hit.get("text_urls") or (
+                isinstance(n_bytes, int) and 0 <= n_bytes < min_chars)
+            if empty:
                 # Known-empty from the scan: record it as the permanent result it is
                 # rather than spending two requests rediscovering it.
                 done.add(h)
                 with fail_path.open("a") as f:
                     f.write(json.dumps({"handle": h, "error": "no_text_bundle",
-                                        "via": "scan"}, ensure_ascii=False) + "\n")
+                                        "via": "scan", "bytes": n_bytes},
+                                       ensure_ascii=False) + "\n")
                 continue
             r = {**r, "_scan": hit}
         # Shard on a hash of the handle, NOT the line index. Index-based splitting
