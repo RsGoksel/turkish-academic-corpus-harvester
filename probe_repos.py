@@ -169,7 +169,7 @@ def _status(url: str) -> int:
 
 
 def probe_access(base: str, sample: int, seed: int, page_size: int = 25,
-                 from_scan: "str | None" = None) -> dict:
+                 from_scan: "str | None" = None, min_bytes: int = 2000) -> dict:
     """Measure what fraction of the text a repository ADVERTISES it will actually serve.
 
     The presence of a TEXT bundle is not permission to read it. Bilkent advertises a
@@ -199,7 +199,10 @@ def probe_access(base: str, sample: int, seed: int, page_size: int = 25,
             except Exception:
                 continue
             n_records += 1
-            if rec.get("text_urls"):
+            # A TEXT bundle can exist and hold an empty file. A zero-byte bitstream
+            # answers 200 to a range request, so counting it as readable inflates the
+            # yield exactly where the check is supposed to protect against inflation.
+            if rec.get("text_urls") and (rec.get("bytes") or 0) >= min_bytes:
                 n_text += 1
                 with_text.append(rec["text_urls"][0])
         examined = n_records          # a completed scan IS the whole population
@@ -239,7 +242,9 @@ def probe_access(base: str, sample: int, seed: int, page_size: int = 25,
                        .get("_embedded") or {}).get("bitstreams") or [])
                 for b in bs:
                     href = ((b.get("_links") or {}).get("content") or {}).get("href")
-                    if href:
+                    # Same empty-file guard as the scan branch: the bundle being
+                    # present says nothing about the file inside it having content.
+                    if href and (b.get("sizeBytes") or 0) >= min_bytes:
                         with_text.append(href)
                         n_text += 1
                         break
