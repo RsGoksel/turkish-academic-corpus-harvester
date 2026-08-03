@@ -29,6 +29,7 @@ import random
 import sys
 import time
 import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -148,6 +149,143 @@ def probe(base: str, sample: int, seed: int) -> dict:
     return out
 
 
+def _status(url: str) -> int:
+    """Status code for a bitstream WITHOUT downloading it.
+
+    `Range: bytes=0-0` asks for one byte. Servers that honour it answer 206 and
+    send nothing; servers that ignore it answer 200 and we close before reading.
+    Either way a readability check costs a few hundred bytes instead of the ~50 KB
+    an average document weighs -- that is the difference between a 40-request probe
+    and a 2 MB one.
+    """
+    if H.LIMITER is not None:
+        H.LIMITER.wait()
+    req = urllib.request.Request(url, headers={**H.UA, "Range": "bytes=0-0"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.status
+    except Exception as e:                                  # noqa: BLE001
+        return getattr(e, "code", 0) or 0
+
+
+def probe_access(base: str, sample: int, seed: int, page_size: int = 25,
+                 from_scan: "str | None" = None) -> dict:
+    """Measure what fraction of the text a repository ADVERTISES it will actually serve.
+
+    The presence of a TEXT bundle is not permission to read it. Bilkent advertises a
+    TEXT bundle on 96.1% of 52,198 records -- a full census, not an estimate -- and
+    then answers HTTP 401 on 65.0% of the bitstreams behind them (measured over 6,061
+    fetches). The realistic yield is 17,100 documents, not 50,143. Every number in
+    SOURCES.md is a coverage figure, so every number in SOURCES.md is an upper bound.
+
+    This is the same mistake as ranking by record count, one layer in: there we
+    learned records != coverage, here that coverage != access. The fix is the same --
+    measure the thing you actually want instead of a proxy for it. Forty requests
+    answer in two minutes what otherwise costs forty hours of harvesting to discover.
+
+    With --from-scan, reuses a completed scan instead of re-paginating (free).
+    """
+    api = f"{base}/server/api"
+    out: dict = {"base": base, "mode": "access"}
+    rng = random.Random(seed)
+    t0 = time.time()
+
+    with_text: list[str] = []
+    if from_scan:
+        n_records = n_text = 0
+        for line in Path(from_scan).open():
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            n_records += 1
+            if rec.get("text_urls"):
+                n_text += 1
+                with_text.append(rec["text_urls"][0])
+        examined = n_records          # a completed scan IS the whole population
+        out["source"] = f"scan:{from_scan}"
+    else:
+        first = json.loads(H.get(f"{api}/discover/search/objects?dsoType=item&size=1&page=0",
+                                 tries=2, delay=2.0))
+        n_records = (((first.get("_embedded") or {}).get("searchResult") or {})
+                     .get("page") or {}).get("totalElements") or 0
+        if not n_records:
+            raise SystemExit("discover uç noktası boş döndü -- DSpace 7 değil mi?")
+        n_pages = (n_records + page_size - 1) // page_size
+        # Draw from pages scattered across the whole repository. Items inside ONE
+        # page come from a single deposit batch and share whatever access policy that
+        # batch was given, so 40 neighbours are nowhere near 40 independent draws --
+        # the same correlation that made the n=50 coverage probes overconfident.
+        # `examined` is the denominator for coverage. Dividing the TEXT count from a
+        # handful of sampled pages by the repository's TOTAL record count reported
+        # Adiyaman at 0.31% coverage and 50 expected documents out of 16,094 records
+        # -- the sample size has to divide the sample, not the population.
+        n_text = examined = 0
+        for page in rng.sample(range(n_pages), min(8, n_pages)):
+            d = json.loads(H.get(
+                f"{api}/discover/search/objects?dsoType=item&size={page_size}"
+                f"&page={page}&embed=bundles/bitstreams", tries=2, delay=2.0))
+            objs = ((((d.get("_embedded") or {}).get("searchResult") or {})
+                     .get("_embedded") or {}).get("objects") or [])
+            for o in objs:
+                ind = (o.get("_embedded") or {}).get("indexableObject") or {}
+                examined += 1
+                blist = ((((ind.get("_embedded") or {}).get("bundles") or {})
+                          .get("_embedded") or {}).get("bundles") or [])
+                tb = next((b for b in blist if b.get("name") == "TEXT"), None)
+                if not tb:
+                    continue
+                bs = ((((tb.get("_embedded") or {}).get("bitstreams") or {})
+                       .get("_embedded") or {}).get("bitstreams") or [])
+                for b in bs:
+                    href = ((b.get("_links") or {}).get("content") or {}).get("href")
+                    if href:
+                        with_text.append(href)
+                        n_text += 1
+                        break
+        out["source"] = "discover"
+
+    out["records"] = n_records
+    if not with_text:
+        out.update({"tested": 0, "readable": 0, "restricted": 0, "errors": 0,
+                    "readable_rate": 0.0, "expected_docs": 0})
+        return out
+
+    rng.shuffle(with_text)
+    picked = with_text[:sample]
+    readable = restricted = errors = 0
+    for url in picked:
+        code = _status(url)
+        if code in (200, 206):
+            readable += 1
+        elif code in (401, 403):
+            restricted += 1
+        else:
+            errors += 1
+
+    tested = readable + restricted            # errors are inconclusive, not denials
+    rate = readable / tested if tested else 0.0
+    lo, hi = wilson(readable, tested)
+    coverage = n_text / examined if examined else 0.0
+    out.update({
+        "tested": tested, "readable": readable, "restricted": restricted,
+        "errors": errors,
+        "text_coverage": round(coverage, 4),
+        # How many items that coverage figure rests on. Without it a 25%-of-200
+        # estimate and a 96.1%-of-52,198 census read identically in the table.
+        "coverage_n": examined,
+        "readable_rate": round(rate, 4),
+        "readable_ci": [round(lo, 4), round(hi, 4)],
+        # records * coverage * readability -- the only one of the three that is a
+        # count of documents we can actually put in the corpus.
+        "expected_docs": int(n_records * coverage * rate),
+        "expected_docs_ci": [int(n_records * coverage * lo),
+                             int(n_records * coverage * hi)],
+        "seconds": round(time.time() - t0, 1),
+    })
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repos", nargs="*", default=CANDIDATES)
@@ -155,7 +293,38 @@ def main():
     ap.add_argument("--delay", type=float, default=3.0)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", default="data/repo_probe.jsonl")
+    ap.add_argument("--access", action="store_true",
+                    help="TEXT paketi var mı değil, GERÇEKTEN indirilebiliyor mu ölç")
+    ap.add_argument("--from-scan", default=None,
+                    help="tamamlanmış scan.jsonl'i kullan (sayfalama isteği harcama)")
     a = ap.parse_args()
+
+    if a.access:
+        H.LIMITER = H.RateLimiter(a.delay)
+        Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for base in a.repos:
+            H.BREAKER = H.CircuitBreaker(threshold=8)
+            try:
+                r = probe_access(base, a.sample, a.seed, from_scan=a.from_scan)
+            except Exception as e:                          # noqa: BLE001
+                r = {"base": base, "error": f"{type(e).__name__}: {str(e)[:120]}"}
+            rows.append(r)
+            if "error" in r:
+                print(f"{base:<40} ERİŞİLEMEDİ  {r['error']}", flush=True)
+            else:
+                ci = f"{r['readable_ci'][0]*100:.0f}-{r['readable_ci'][1]*100:.0f}"
+                print(f"{base.replace('https://',''):<40}"
+                      f"{r['tested']:>4} denendi  okunabilir %{r['readable_rate']*100:>5.1f}"
+                      f" ({ci})  401/403 {r['restricted']:>3}"
+                      f"  -> ~{r['expected_docs']:,} belge", flush=True)
+        with open(a.out, "a") as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        print(f"\nkaydedildi: {a.out}")
+        print("NOT: 'beklenen belge' = kayıt × TEXT kapsaması × okunabilirlik.")
+        print("     Yalnız kapsamaya bakan sayı ÜST SINIRDIR, tahmin değildir.")
+        return
 
     H.LIMITER = H.RateLimiter(a.delay)
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
